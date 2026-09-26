@@ -2,12 +2,16 @@
 # tools/weather_tool.py  — with Smart Alerts
 # ============================================
 
+import logging
 import os
+
 import requests
 from langchain_core.tools import tool
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -31,41 +35,49 @@ def get_weather(city: str) -> dict:
                 f"?q={city},PK&appid={api_key}&units=metric"
             )
             resp = requests.get(url, timeout=8)
+            resp.raise_for_status()
             data = resp.json()
 
-            if resp.status_code == 200:
-                weather   = data.get("weather", [{}])[0]
-                main      = data.get("main", {})
-                wind      = data.get("wind", {})
-                temp      = main.get("temp", 25)
-                wind_kmh  = round(wind.get("speed", 0) * 3.6, 1)
-                condition = weather.get("main", "Clear")
-                tip       = _farming_tip(temp, main.get("humidity", 50), condition)
+            weather = data.get("weather", [{}])[0]
+            main = data.get("main", {})
+            wind = data.get("wind", {})
+            temp = main.get("temp", 25)
+            wind_kmh = round(wind.get("speed", 0) * 3.6, 1)
+            condition = weather.get("main", "Clear")
+            tip = _farming_tip(temp, main.get("humidity", 50), condition)
 
-                # ── ALERT HOOK ───────────────────────────────────
-                try:
-                    from utils.alert_manager import get_alert_manager
-                    alert = get_alert_manager()
-                    alert.send_weather_alert(
-                        city=city, temp=temp,
-                        wind_kmh=wind_kmh, condition=condition,
-                        farming_advice=tip
-                    )
-                except Exception:
-                    pass   # Never crash agent on alert failure
-                # ─────────────────────────────────────────────────
+            # ── ALERT HOOK ───────────────────────────────────
+            try:
+                from utils.alert_manager import get_alert_manager
+                alert = get_alert_manager()
+                alert.send_weather_alert(
+                    city=city, temp=temp,
+                    wind_kmh=wind_kmh, condition=condition,
+                    farming_advice=tip
+                )
+            except Exception:
+                # Alert failure must not prevent weather data from being returned,
+                # but it must be visible in application logs.
+                logger.exception("Failed to send weather alert for %s", city)
+            # ─────────────────────────────────────────────────
 
-                return {
-                    "city": city,
-                    "description": weather.get("description", "N/A"),
-                    "temperature_c": temp,
-                    "feels_like_c": main.get("feels_like"),
-                    "humidity_pct": main.get("humidity"),
-                    "wind_speed_kmh": wind_kmh,
-                    "farming_tip": tip,
-                }
+            return {
+                "city": city,
+                "description": weather.get("description", "N/A"),
+                "temperature_c": temp,
+                "feels_like_c": main.get("feels_like"),
+                "humidity_pct": main.get("humidity"),
+                "wind_speed_kmh": wind_kmh,
+                "farming_tip": tip,
+            }
+        except requests.RequestException as exc:
+            logger.warning("Weather API request failed for %s: %s", city, exc)
+        except ValueError as exc:
+            logger.error("Weather API returned invalid JSON for %s: %s", city, exc)
         except Exception:
-            pass
+            logger.exception("Unexpected error while retrieving weather for %s", city)
+    else:
+        logger.warning("OPENWEATHER_API_KEY is missing or still uses the placeholder value")
 
     return {
         "city": city,
